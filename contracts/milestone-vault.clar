@@ -258,3 +258,56 @@
                 )
                 true  ;; No verification exists, allow withdrawal
             )
+
+            ;; Return remaining funds to donor
+            (try! (as-contract (stx-transfer? 
+                withdrawal-amount 
+                tx-sender 
+                (get donor pool)
+            )))
+
+            ;; Deactivate pool
+            (map-set scholarship-pools 
+                { pool-id: pool-id }
+                (merge pool {
+                    remaining-amount: u0,
+                    active: false
+                })
+            )
+
+            (ok withdrawal-amount)
+        )
+    )
+)
+
+;; Read-Only Functions
+
+(define-read-only (is-oracle (oracle principal))
+    (default-to false (map-get? oracles oracle))
+)
+
+(define-read-only (get-pool-counter)
+    (var-get pool-counter)
+)
+
+(define-read-only (get-pool-info (pool-id uint))
+    (map-get? scholarship-pools { pool-id: pool-id })
+)
+
+(define-read-only (get-milestone-verification
+        (pool-id uint)
+        (semester uint)
+    )
+    (map-get? milestone-verifications {
+        pool-id: pool-id,
+        semester: semester
+    })
+)
+
+(define-read-only (get-contract-info)
+    {
+        name: "MilestoneVault",
+        version: "1.0.0",
+        description: "Trustless milestone-driven educational fund distribution protocol"
+    }
+    )
