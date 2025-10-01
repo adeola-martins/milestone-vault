@@ -123,3 +123,138 @@
         (ok pool-id)
     )
 )
+
+;; Milestone Verification Functions
+
+;; Submit academic milestone verification
+(define-public (verify-milestone
+        (pool-id uint)
+        (semester uint)
+        (student-gpa uint)
+    )
+    (let (
+            (pool (unwrap! (map-get? scholarship-pools { pool-id: pool-id })
+                ERR-POOL-NOT-FOUND
+            ))
+        )
+        ;; Authorization and validation checks
+        (asserts! (is-oracle tx-sender) ERR-ORACLE-NOT-AUTHORIZED)
+        (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        (asserts! (is-eq semester (+ (get semesters-released pool) u1))
+            ERR-MILESTONE-NOT-MET
+        )
+        (asserts! (<= semester (get total-semesters pool)) ERR-MILESTONE-NOT-MET)
+
+        ;; Record verification
+        (map-set milestone-verifications 
+            {
+                pool-id: pool-id,
+                semester: semester
+            } 
+            {
+                gpa: student-gpa,
+                verified-by: tx-sender,
+                verified-at: stacks-block-height,
+                released: false
+            }
+        )
+
+        (ok true)
+    )
+)
+
+;; Fund Distribution Functions
+
+;; Release semester funds upon successful milestone completion
+(define-public (release-semester-funds
+        (pool-id uint)
+        (semester uint)
+    )
+    (let (
+            (pool (unwrap! (map-get? scholarship-pools { pool-id: pool-id })
+                ERR-POOL-NOT-FOUND
+            ))
+            (verification (unwrap!
+                (map-get? milestone-verifications {
+                    pool-id: pool-id,
+                    semester: semester
+                })
+                ERR-MILESTONE-NOT-MET
+            ))
+        )
+        ;; Validation checks
+        (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        (asserts! (not (get released verification)) ERR-ALREADY-CLAIMED)
+        (asserts! (>= (get gpa verification) (get required-gpa pool))
+            ERR-MILESTONE-NOT-MET
+        )
+        (asserts! (is-eq semester (+ (get semesters-released pool) u1))
+            ERR-MILESTONE-NOT-MET
+        )
+        (asserts! (>= (get remaining-amount pool) (get amount-per-semester pool))
+            ERR-INSUFFICIENT-FUNDS
+        )
+
+        ;; Transfer funds to student
+        (try! (as-contract (stx-transfer? 
+            (get amount-per-semester pool) 
+            tx-sender
+            (get student pool)
+        )))
+
+        ;; Update pool state
+        (map-set scholarship-pools 
+            { pool-id: pool-id }
+            (merge pool {
+                remaining-amount: (- (get remaining-amount pool) (get amount-per-semester pool)),
+                semesters-released: (+ (get semesters-released pool) u1),
+                active: (< (+ (get semesters-released pool) u1)
+                    (get total-semesters pool)
+                )
+            })
+        )
+
+        ;; Mark verification as released
+        (map-set milestone-verifications 
+            {
+                pool-id: pool-id,
+                semester: semester
+            }
+            (merge verification { released: true })
+        )
+
+        (ok (get amount-per-semester pool))
+    )
+)
+
+;; Emergency Functions
+
+;; Donor emergency withdrawal for failed milestone compliance
+(define-public (emergency-withdrawal (pool-id uint))
+    (let (
+            (pool (unwrap! (map-get? scholarship-pools { pool-id: pool-id })
+                ERR-POOL-NOT-FOUND
+            ))
+        )
+        ;; Authorization checks
+        (asserts! (is-eq tx-sender (get donor pool)) ERR-NOT-AUTHORIZED)
+        (asserts! (get active pool) ERR-POOL-NOT-FOUND)
+        (asserts! (> (get remaining-amount pool) u0) ERR-INSUFFICIENT-FUNDS)
+
+        ;; Validate withdrawal conditions
+        (let (
+                (next-semester (+ (get semesters-released pool) u1))
+                (next-verification (map-get? milestone-verifications {
+                    pool-id: pool-id,
+                    semester: next-semester
+                }))
+                (withdrawal-amount (get remaining-amount pool))
+            )
+            ;; Ensure milestone failure or no verification
+            (match next-verification
+                verification
+                (asserts! (< (get gpa verification) (get required-gpa pool))
+                    ERR-MILESTONE-NOT-MET
+                )
+                true  ;; No verification exists, allow withdrawal
+            )
